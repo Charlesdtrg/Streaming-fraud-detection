@@ -105,12 +105,6 @@ under the License.
 			<version>${log4j.version}</version>
 			<scope>compile</scope>
 		</dependency>
-		<!-- https://mvnrepository.com/artifact/org.json4s/json4s-native -->
-		<dependency>
-			<groupId>org.json4s</groupId>
-			<artifactId>json4s-native_2.12</artifactId>
-			<version>4.0.0</version>
-		</dependency>
 	</dependencies>
 	<build>
 		<plugins>
@@ -181,7 +175,6 @@ under the License.
 					</execution>
 				</executions>
 				<configuration>
-					<addScalacArgs>-target:jvm-1.8</addScalacArgs>
 					<args>
 						<arg>-nobootcp</arg>
 					</args>
