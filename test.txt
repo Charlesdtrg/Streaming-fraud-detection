@@ -1,0 +1,14 @@
+(launch windows terminal)
+(in Windows Powershell)
+
+cd "Your_Path_to/Streaming Data/Project/"
+(launch docker desktop)
+docker-compose up
+
+(or for a clean start)
+docker-compose rm -f; docker-compose up
+
+kafkacat -b localhost:9092 -t clicks
+bash -c "$(curl https://flink.apache.org/q/gradle-quickstart.sh)" -- 1.12.0 2.11
+curl https://flink.apache.org/q/quickstart-scala.sh | bash
+
