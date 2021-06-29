@@ -142,7 +142,7 @@ object StreamingJob {
 //    .window(SlidingEventTimeWindows.of(Time.minutes(2), Time.minutes(1)))
 //
     windowedStreamUID.print()
-    // adding a test comment
+    // adding another test comment
 
 //    val output_path = "./"
 //    windowedStream.writeAsText(output_path: String)
