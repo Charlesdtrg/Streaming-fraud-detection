@@ -28,9 +28,8 @@ import org.apache.flink.core.fs.Path
 import org.apache.flink.streaming.api.functions.sink.filesystem.{OutputFileConfig, StreamingFileSink}
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy
 import org.apache.flink.streaming.api.scala._
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
 import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
 import org.apache.flink.streaming.api.windowing.time.Time
 
 import java.time.Duration
@@ -86,16 +85,11 @@ object StreamingJob {
     topics.add("clicks")
     topics.add("displays")
 
-    // CONSUME STREAMS AND CONVERT TO JSON
-    // /!\ Simplestringschema converts command lines to string. Best to transform to json
-//    val stream = env
-//      .addSource(new FlinkKafkaConsumer[String](topics, new SimpleStringSchema(), properties))
+    // CONSUME STREAMS AND CONVERT TO JSON WITH WATERMARKS
     val stream = env
       .addSource(new FlinkKafkaConsumer[ObjectNode](topics, new JSONKeyValueDeserializationSchema(false), properties)
         .assignTimestampsAndWatermarks(WatermarkStrategy.forBoundedOutOfOrderness[ObjectNode](Duration.ofSeconds(20)))
       )
-
-    // add streamFraud with topic "fraud"
 
 //    stream.print()
 
@@ -123,11 +117,6 @@ object StreamingJob {
 //      .map(x => x.toString())
 //      .addSink(sink)
 
-    // ADD KafkaProducer for fraud
-
-
-
-
     // FORM WINDOW
     val windowedStreamUID = stream
       .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
@@ -136,19 +125,29 @@ object StreamingJob {
       .keyBy(x => x._1)
       .window(SlidingEventTimeWindows.of(Time.minutes(2), Time.minutes(1)))
       .reduce( (a, b) => (a._1, a._2, a._3+b._3) )
-      .filter(x => x._3 >= 20)
+//      .filter(x => x._3 >= 20)
 //  val windowedStreamIP = stream
 //    .keyBy(x => x.get("value").get("IP"))
 //    .window(SlidingEventTimeWindows.of(Time.minutes(2), Time.minutes(1)))
-//
-    windowedStreamUID.print()
-    // adding another test comment
 
-//    val output_path = "./"
-//    windowedStream.writeAsText(output_path: String)
-//
-    // JOIN
-    // windowedStreamEvents = windowedStreamDisplay.join(windowedStreamDisplay, on="uid")
+//    windowedStreamUID.print()
+
+    // ADD KafkaProducer TO FEED FRAUD DATA TO
+    val fraudFilter = new FlinkKafkaProducer[String](
+      "fraudulentEvent",                  // target topic
+      new SimpleStringSchema(),    // serialization schema
+      properties                  // producer config
+//      FlinkKafkaProducer.Semantic.NONE // fault-tolerance  // Does not work
+    )
+
+    windowedStreamUID
+          .map(x => x.toString())
+          .addSink(fraudFilter)
+
+    val streamFraudulent = env
+      .addSource(new FlinkKafkaConsumer[String]("fraudulentEvent", new SimpleStringSchema(), properties))
+
+    streamFraudulent.print()
 
     // FILTER THE FRAUDULENT DATA
     // user clicks too often on the ads
@@ -157,30 +156,7 @@ object StreamingJob {
     // User clicks several time on the same ad
     // same IP address has several users (join on IP ?)
 
-//      stream.addSink(sink)
-
-
     // execute program
     env.execute("Flink Streaming Scala API Skeleton")
   }
 }
-
-//    streamDisplay
-//      .flatMap(raw => JsonMethods.parse(raw).toOption)
-//      .map(_.extract[Car])
-//      .windowAll("uid")
-//      .TimeWindow(Time.minutes(1))
-
-
-// CODE CHARLES SINK
-//val sink: StreamingFileSink[String] = StreamingFileSink
-//  .forRowFormat(new Path(outputPath), new SimpleStringEncoder[String]("UTF-8"))
-//  .withRollingPolicy(
-//  DefaultRollingPolicy.builder()
-//  .withRolloverInterval(TimeUnit.MINUTES.toMillis(1))
-//  .withInactivityInterval(TimeUnit.MINUTES.toMillis(5))
-//  .withMaxPartSize(1024 * 1024 * 1024)
-//  .build())
-//  .build()
-//
-//  stream.addSink(sink)

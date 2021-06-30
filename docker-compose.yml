@@ -31,7 +31,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
       KAFKA_ADVERTISED_HOST_NAME: kafka
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_CREATE_TOPICS: "clicks:5:1,displays:10:1"
+      KAFKA_CREATE_TOPICS: "clicks:5:1,displays:10:1,fraudulentEvent:5:1"
     ports:
       - 9092:9092
     expose:
