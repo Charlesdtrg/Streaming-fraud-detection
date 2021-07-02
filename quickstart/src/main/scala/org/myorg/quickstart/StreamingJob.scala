@@ -25,6 +25,7 @@ import org.apache.flink.api.common.serialization.{SerializationSchema, SimpleStr
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserializationSchema
 import org.apache.flink.core.fs.Path
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode
 import org.apache.flink.streaming.api.functions.sink.filesystem.{OutputFileConfig, StreamingFileSink}
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy
 import org.apache.flink.streaming.api.scala._
@@ -117,14 +118,30 @@ object StreamingJob {
 //      .map(x => x.toString())
 //      .addSink(sink)
 
+
+    def extract_data(x:ObjectNode) : (JsonNode, Int, Int) = {
+      // ('uid', 'display_count', 'click_count')
+      (
+      x.get("value").get("uid"),
+      if (x.get("value").get("eventType").textValue=="display") 1 else 0,
+      if (x.get("value").get("eventType").textValue=="click") 1 else 0
+      )
+    }
     // FORM WINDOW
     val windowedStreamUID = stream
-      .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
-//      .map(x => (x,1))
-//      .keyBy(x => x.get("value").get("uid"))
+//      .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
+      // ('uid', 'display_count', 'click_count')
+//        .map(x => extract_data(x)
+      .map(x => (
+                 x.get("value").get("uid"),
+                 if (x.get("value").get("eventType").textValue=="display") 1 else 0,
+                 if (x.get("value").get("eventType").textValue=="click") 1 else 0
+                )
+      )
       .keyBy(x => x._1)
-      .window(SlidingEventTimeWindows.of(Time.minutes(2), Time.minutes(1)))
-      .reduce( (a, b) => (a._1, a._2, a._3+b._3) )
+      .window(SlidingEventTimeWindows.of(Time.minutes(5), Time.minutes(2)))
+//      .reduce( (a, b) => (a._1, a._2, a._3+b._3) )
+      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3) )
 //      .filter(x => x._3 >= 20)
 //  val windowedStreamIP = stream
 //    .keyBy(x => x.get("value").get("IP"))
@@ -140,13 +157,17 @@ object StreamingJob {
 //      FlinkKafkaProducer.Semantic.NONE // fault-tolerance  // Does not work
     )
 
+    // FORMAT FILTERED DATA FOR ANALYSIS AND ADD TO SINK
+    def format(uid:JsonNode, display_count:Int, click_count:Int) : String = {
+      f"{'uid':$uid, 'display_count':$display_count, 'click_count':$click_count}"
+    }
     windowedStreamUID
-          .map(x => x.toString())
+          .map(x => format(x._1, x._2, x._3))
           .addSink(fraudFilter)
 
+    // STREAM BACK FRAUDULENT DATA
     val streamFraudulent = env
       .addSource(new FlinkKafkaConsumer[String]("fraudulentEvent", new SimpleStringSchema(), properties))
-
     streamFraudulent.print()
 
     // FILTER THE FRAUDULENT DATA
@@ -155,6 +176,7 @@ object StreamingJob {
     // ...
     // User clicks several time on the same ad
     // same IP address has several users (join on IP ?)
+    // clicks without a corresponding display
 
     // execute program
     env.execute("Flink Streaming Scala API Skeleton")
