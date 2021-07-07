@@ -78,6 +78,9 @@ object StreamingJob {
 
 //    env.readTextFile(filePath= "/tmp/test_flink.txt")
 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////// GET STREAM
+
     val properties = new Properties()
     properties.setProperty("bootstrap.servers", "localhost:9092")
     properties.setProperty("group.id", "test")
@@ -91,7 +94,6 @@ object StreamingJob {
       .addSource(new FlinkKafkaConsumer[ObjectNode](topics, new JSONKeyValueDeserializationSchema(false), properties)
         .assignTimestampsAndWatermarks(WatermarkStrategy.forBoundedOutOfOrderness[ObjectNode](Duration.ofSeconds(20)))
       )
-
 //    stream.print()
 
     // FILTER
@@ -119,53 +121,89 @@ object StreamingJob {
 //      .addSink(sink)
 
 
-    def extract_data(x:ObjectNode) : (JsonNode, Int, Int) = {
-      // ('uid', 'display_count', 'click_count')
+/////////////////////////////////////////////////////////////////////////////////////////////// EXTRACT DATA FROM STREAM
+
+    def extract_data(x:ObjectNode) : (String, String, String, Int, Int, Int) = {
+      // maps to a tuple ('uid', 'display_count', 'click_count')
       (
-      x.get("value").get("uid"),
+      x.get("value").get("uid").textValue,
+      x.get("value").get("ip").textValue,
+      x.get("value").get("impressionId").textValue,
       if (x.get("value").get("eventType").textValue=="display") 1 else 0,
-      if (x.get("value").get("eventType").textValue=="click") 1 else 0
+      if (x.get("value").get("eventType").textValue=="click") 1 else 0,
+      x.get("value").get("timestamp").intValue
       )
     }
-    // FORM WINDOW
-    val windowedStreamUID = stream
-//      .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
-      // ('uid', 'display_count', 'click_count')
-//        .map(x => extract_data(x)
-      .map(x => (
-                 x.get("value").get("uid"),
-                 if (x.get("value").get("eventType").textValue=="display") 1 else 0,
-                 if (x.get("value").get("eventType").textValue=="click") 1 else 0
-                )
-      )
-      .keyBy(x => x._1)
-      .window(SlidingEventTimeWindows.of(Time.minutes(5), Time.minutes(2)))
-//      .reduce( (a, b) => (a._1, a._2, a._3+b._3) )
-      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3) )
-//      .filter(x => x._3 >= 20)
-//  val windowedStreamIP = stream
-//    .keyBy(x => x.get("value").get("IP"))
-//    .window(SlidingEventTimeWindows.of(Time.minutes(2), Time.minutes(1)))
+    // FORMAT THE JSON STREAM TO THE DESIRED OUTPUT FOR ALL FILTERS
+    val dataStream = stream
+      //  maps to a tuple ('uid', 'IP', 'display_count', 'click_count')
+        .map(x => extract_data(x))
+    //      .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
+//      .map(x => (
+//                 x.get("value").get("uid").textValue,
+//                 if (x.get("value").get("eventType").textValue=="display") 1 else 0,
+//                 if (x.get("value").get("eventType").textValue=="click") 1 else 0
+//                )
+//      )
 
-//    windowedStreamUID.print()
+///////////////////////////////////////////////////////////////////////////////////////////////// FILTER FRAUDULENT DATA
 
-    // ADD KafkaProducer TO FEED FRAUD DATA TO
+    // INSTANTIATE SINK TO SEND FRAUDULENT DATA TO WITH KafkaProducer
     val fraudFilter = new FlinkKafkaProducer[String](
       "fraudulentEvent",                  // target topic
       new SimpleStringSchema(),    // serialization schema
       properties                  // producer config
-//      FlinkKafkaProducer.Semantic.NONE // fault-tolerance  // Does not work
+      //      FlinkKafkaProducer.Semantic.NONE // fault-tolerance  // Does not work
     )
 
     // FORMAT FILTERED DATA FOR ANALYSIS AND ADD TO SINK
-    def format(uid:JsonNode, display_count:Int, click_count:Int) : String = {
-      f"{'uid':$uid, 'display_count':$display_count, 'click_count':$click_count}"
+    def format(fraud_type:String, uid:String, display_count:Int, click_count:Int) : String = {
+      f"{'fraud_type': $fraud_type, 'uid': $uid , 'display_count': $display_count, 'click_count': $click_count}"
     }
-    windowedStreamUID
-          .map(x => format(x._1, x._2, x._3))
-          .addSink(fraudFilter)
 
-    // STREAM BACK FRAUDULENT DATA
+    val windowLength = 2
+    val windowDelay = 1
+    // FRAUD PATTERN 1 : HIGH CLICK THROUGH RATE, FILTER ABOVE 20 CLICKS IN 10 MINUTES
+    // FORM WINDOW KEYED ON UID
+    val clickThroughRate = dataStream
+      // keep ('uid', 'display_count', 'click_count')
+      .map(x => (x._1, x._4, x._5))
+      .keyBy(x => x._1) // key on uid
+      .window(SlidingEventTimeWindows.of(Time.minutes(windowLength), Time.minutes(windowDelay)))
+      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3) )
+//      .filter(x => x._3.toFloat >= x._2.toFloat*0.1) // CTR above 0.1
+      .filter(x => x._3 > 2*windowLength)
+      .map(x => format(fraud_type = "high_CTR", uid = x._1, display_count = x._2, click_count = x._3))
+//      .addSink(fraudFilter)
+
+    // FRAUD PATTERN 2 : IP ADDRESS WITH ANORMALLY HIGH NUMBER OF UID ASSOCIATED, ABOVE 50 IN 10 MINUTES
+    // FORM WINDOW KEYED ON IP
+    val fraudulentIP = dataStream
+      // keep ('IP', 'click_count')
+      .map(x => (x._2, x._5))
+      .keyBy(x => x._1) // key on IP
+      .window(SlidingEventTimeWindows.of(Time.minutes(windowLength), Time.minutes(windowDelay)))
+      .reduce( (a, b) => (a._1, a._2+b._2) )
+      .filter(x => x._2 > 5*windowLength)
+      .map(x => f"{'fraud_type': fraudulent_IP, 'IP': ${x._1} , 'click_count': ${x._2}}")
+//      .addSink(fraudFilter)
+
+    // FRAUD PATTERN 3 : REMOVE BANNERS WITH TOO MANY CLICKS
+    // FORM WINDOW KEYED ON IMPRESSIONID
+    val overused_banner = dataStream
+      // keep ('uid', 'display_count', 'click_count', 'timestamp')
+      .map(x => (x._3, x._4, x._5, x._6))
+      .keyBy(x => x._1) // key on impressionId
+      .window(SlidingEventTimeWindows.of(Time.minutes(windowLength), Time.minutes(windowDelay)))
+      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3, (a._4).min(b._4)) )
+//      .filter(x => x._3 > 0)
+//      .map(x => format(fraud_type = "click_without_display", uid = x._1, display_count = x._2, click_count = x._3))
+      .map(x => f"{'fraud_type': banner_overused, 'impressionId': ${x._1} , 'display_count': ${x._2} , 'click_count': ${x._3} , 'timestamp': ${x._4}}")
+      .addSink(fraudFilter)
+
+///////////////////////////////////////////////////////////////////////////////////////////////// STREAM FRAUDULENT DATA
+
+    // STREAM BACK FRAUDULENT DATA AND PRINT
     val streamFraudulent = env
       .addSource(new FlinkKafkaConsumer[String]("fraudulentEvent", new SimpleStringSchema(), properties))
     streamFraudulent.print()
