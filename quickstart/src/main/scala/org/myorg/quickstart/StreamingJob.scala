@@ -18,14 +18,13 @@
 
 package org.myorg.quickstart
 
-import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
+import org.apache.flink.api.common.eventtime.WatermarkStrategy
 
 import java.util.Properties
-import org.apache.flink.api.common.serialization.{SerializationSchema, SimpleStringEncoder, SimpleStringSchema}
+import org.apache.flink.api.common.serialization.{SimpleStringEncoder, SimpleStringSchema}
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserializationSchema
 import org.apache.flink.core.fs.Path
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode
 import org.apache.flink.streaming.api.functions.sink.filesystem.{OutputFileConfig, StreamingFileSink}
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy
 import org.apache.flink.streaming.api.scala._
@@ -56,29 +55,6 @@ object StreamingJob {
     // set up the streaming execution environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-    /*
-     * Here, you can start creating your execution plan for Flink.
-     *
-     * Start with getting some data from the environment, like
-     *  env.readTextFile(textPath);
-     *
-     * then, transform the resulting DataStream[String] using operations
-     * like
-     *   .filter()
-     *   .flatMap()
-     *   .join()
-     *   .group()
-     *
-     * and many more.
-     * Have a look at the programming guide:
-     *
-     * https://flink.apache.org/docs/latest/apis/streaming/index.html
-     *
-     */
-
-//    env.readTextFile(filePath= "/tmp/test_flink.txt")
-
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////// GET STREAM
 
     val properties = new Properties()
@@ -96,9 +72,7 @@ object StreamingJob {
       )
 //    stream.print()
 
-    // FILTER
-
-//     CREATE SINK TO WRITE TO
+//     CREATE SINK TO WRITE TO (commented as it is not in use anymore)
 //    val outputPath = "../eventSink"
 //    val config = OutputFileConfig
 //      .builder()
@@ -115,7 +89,7 @@ object StreamingJob {
 //          .build())
 //      .withOutputFileConfig(config)
 //      .build()
-
+//
 //    stream
 //      .map(x => x.toString())
 //      .addSink(sink)
@@ -124,7 +98,7 @@ object StreamingJob {
 /////////////////////////////////////////////////////////////////////////////////////////////// EXTRACT DATA FROM STREAM
 
     def extract_data(x:ObjectNode) : (String, String, String, Int, Int, Int) = {
-      // maps to a tuple ('uid', 'display_count', 'click_count')
+      // maps to a tuple ('uid', 'ip', 'impressionid', 'display_count', 'click_count', 'timestamp')
       (
       x.get("value").get("uid").textValue,
       x.get("value").get("ip").textValue,
@@ -138,13 +112,6 @@ object StreamingJob {
     val dataStream = stream
       //  maps to a tuple ('uid', 'IP', 'display_count', 'click_count')
         .map(x => extract_data(x))
-    //      .map(x => (x.get("value").get("uid"), x.get("value").get("eventType"), 1))
-//      .map(x => (
-//                 x.get("value").get("uid").textValue,
-//                 if (x.get("value").get("eventType").textValue=="display") 1 else 0,
-//                 if (x.get("value").get("eventType").textValue=="click") 1 else 0
-//                )
-//      )
 
 ///////////////////////////////////////////////////////////////////////////////////////////////// FILTER FRAUDULENT DATA
 
@@ -156,14 +123,9 @@ object StreamingJob {
       //      FlinkKafkaProducer.Semantic.NONE // fault-tolerance  // Does not work
     )
 
-    // FORMAT FILTERED DATA FOR ANALYSIS AND ADD TO SINK
-    def format(fraud_type:String, uid:String, display_count:Int, click_count:Int) : String = {
-      f"{'fraud_type': $fraud_type, 'uid': $uid , 'display_count': $display_count, 'click_count': $click_count}"
-    }
-
-    val windowLength = 2
-    val windowDelay = 1
-    // FRAUD PATTERN 1 : HIGH CLICK THROUGH RATE, FILTER ABOVE 20 CLICKS IN 10 MINUTES
+    val windowLength = 4
+    val windowDelay = 2
+    // FRAUD PATTERN 1 : HIGH CLICK PER MINUTE RATE, FILTER ABOVE 20 CLICKS IN 10 MINUTES
     // FORM WINDOW KEYED ON UID
     val clickThroughRate = dataStream
       // keep ('uid', 'display_count', 'click_count')
@@ -173,10 +135,11 @@ object StreamingJob {
       .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3) )
 //      .filter(x => x._3.toFloat >= x._2.toFloat*0.1) // CTR above 0.1
       .filter(x => x._3 > 2*windowLength)
-      .map(x => format(fraud_type = "high_CTR", uid = x._1, display_count = x._2, click_count = x._3))
+      .map(x => f"{'fraud_type': high_click_per_min, 'uid': ${x._2} , 'display_count': ${x._2}, 'click_count': ${x._3}}")
+//      .map(x => format(fraud_type = "high_CTR", uid = x._1, display_count = x._2, click_count = x._3))
 //      .addSink(fraudFilter)
 
-    // FRAUD PATTERN 2 : IP ADDRESS WITH ANORMALLY HIGH NUMBER OF UID ASSOCIATED, ABOVE 50 IN 10 MINUTES
+    // FRAUD PATTERN 2 : IP ADDRESS WITH ABNORMALLY HIGH NUMBER OF CLICK ASSOCIATED, ABOVE 5 PER MINUTE
     // FORM WINDOW KEYED ON IP
     val fraudulentIP = dataStream
       // keep ('IP', 'click_count')
@@ -191,14 +154,14 @@ object StreamingJob {
     // FRAUD PATTERN 3 : REMOVE BANNERS WITH TOO MANY CLICKS
     // FORM WINDOW KEYED ON IMPRESSIONID
     val overused_banner = dataStream
-      // keep ('uid', 'display_count', 'click_count', 'timestamp')
-      .map(x => (x._3, x._4, x._5, x._6))
-      .keyBy(x => x._1) // key on impressionId
+      // keep ('uid', 'display_count', 'click_count', 'timestamp', 'ip', 'impressionId')
+      .map(x => (x._1, x._4, x._5, x._6, x._2, x._3))
+      .keyBy(x => (x._6)) // key on timestamp
       .window(SlidingEventTimeWindows.of(Time.minutes(windowLength), Time.minutes(windowDelay)))
-      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3, (a._4).min(b._4)) )
-//      .filter(x => x._3 > 0)
+      .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3, a._4, a._5, a._6) )
+//      .filter(x => x._2 == 0)
 //      .map(x => format(fraud_type = "click_without_display", uid = x._1, display_count = x._2, click_count = x._3))
-      .map(x => f"{'fraud_type': banner_overused, 'impressionId': ${x._1} , 'display_count': ${x._2} , 'click_count': ${x._3} , 'timestamp': ${x._4}}")
+      .map(x => f"{'fraud_type': no_display, 'uid': ${x._1} , 'display_count': ${x._2} , 'click_count': ${x._3} , 'ip': ${x._5}}")
       .addSink(fraudFilter)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////// STREAM FRAUDULENT DATA
@@ -207,14 +170,6 @@ object StreamingJob {
     val streamFraudulent = env
       .addSource(new FlinkKafkaConsumer[String]("fraudulentEvent", new SimpleStringSchema(), properties))
     streamFraudulent.print()
-
-    // FILTER THE FRAUDULENT DATA
-    // user clicks too often on the ads
-    // val fraud_case1_too_many_clicks = windowedStreamEvents.filter(nb_clicks>=15%)
-    // ...
-    // User clicks several time on the same ad
-    // same IP address has several users (join on IP ?)
-    // clicks without a corresponding display
 
     // execute program
     env.execute("Flink Streaming Scala API Skeleton")
