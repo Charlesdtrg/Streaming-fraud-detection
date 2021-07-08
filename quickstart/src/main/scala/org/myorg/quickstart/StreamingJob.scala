@@ -137,7 +137,7 @@ object StreamingJob {
       .filter(x => x._3 > 2*windowLength)
       .map(x => f"{'fraud_type': high_click_per_min, 'uid': ${x._2} , 'display_count': ${x._2}, 'click_count': ${x._3}}")
 //      .map(x => format(fraud_type = "high_CTR", uid = x._1, display_count = x._2, click_count = x._3))
-//      .addSink(fraudFilter)
+      .addSink(fraudFilter)
 
     // FRAUD PATTERN 2 : IP ADDRESS WITH ABNORMALLY HIGH NUMBER OF CLICK ASSOCIATED, ABOVE 5 PER MINUTE
     // FORM WINDOW KEYED ON IP
@@ -149,19 +149,18 @@ object StreamingJob {
       .reduce( (a, b) => (a._1, a._2+b._2) )
       .filter(x => x._2 > 5*windowLength)
       .map(x => f"{'fraud_type': fraudulent_IP, 'IP': ${x._1} , 'click_count': ${x._2}}")
-//      .addSink(fraudFilter)
+      .addSink(fraudFilter)
 
-    // FRAUD PATTERN 3 : REMOVE BANNERS WITH TOO MANY CLICKS
-    // FORM WINDOW KEYED ON IMPRESSIONID
+    // FRAUD PATTERN 3 : FILTER EVENT WITHOUT DISPLAY
+    // FORM WINDOW KEYED ON UID
     val overused_banner = dataStream
       // keep ('uid', 'display_count', 'click_count', 'timestamp', 'ip', 'impressionId')
       .map(x => (x._1, x._4, x._5, x._6, x._2, x._3))
-      .keyBy(x => (x._6)) // key on timestamp
+      .keyBy(x => (x._1)) // key on uid
       .window(SlidingEventTimeWindows.of(Time.minutes(windowLength), Time.minutes(windowDelay)))
       .reduce( (a, b) => (a._1, a._2+b._2, a._3+b._3, a._4, a._5, a._6) )
-//      .filter(x => x._2 == 0)
-//      .map(x => format(fraud_type = "click_without_display", uid = x._1, display_count = x._2, click_count = x._3))
-      .map(x => f"{'fraud_type': no_display, 'uid': ${x._1} , 'display_count': ${x._2} , 'click_count': ${x._3} , 'ip': ${x._5}}")
+      .filter(x => x._2 == 0)
+      .map(x => f"{'fraud_type': no_display, 'timestamp': ${x._4} , 'ip': ${x._5}}, 'impressionId': ${x._6} , 'click_count': ${x._3}")
       .addSink(fraudFilter)
 
 ///////////////////////////////////////////////////////////////////////////////////////////////// STREAM FRAUDULENT DATA
